@@ -42,3 +42,26 @@ results = evaluator.run(
 - **Langsmith Integration**: Seamless integration with Langsmith for tracking and visualization
 - **Default Implementations**: Zero-config defaults for quick start
 
+## Project Structure
+
+```
+rag_evaluation_framework/
+├── evaluation/
+│   ├── base_eval.py          # Main Evaluation class
+│   ├── config.py             # Configuration & defaults
+│   ├── metrics.py            # Recall, Precision, MRR calculators
+│   ├── chunker/
+│   │   ├── base.py           # Abstract base
+│   │   └── default.py        # Default chunker implementation
+│   ├── embedder/
+│   │   ├── base.py           # Abstract base
+│   │   └── default.py        # Default embedder
+│   └── reranker/
+│       ├── base.py           # Abstract base
+│       └── default.py        # Default reranker (Cohere)
+├── storage/
+│   └── results.py            # Save/load evaluation results
+└── visualization/
+    └── comparison.py         # ComparisonGraph class
+```
+
