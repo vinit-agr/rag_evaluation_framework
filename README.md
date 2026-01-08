@@ -15,11 +15,20 @@ This is a RAG Evaluation Framework which helps you quickly run evaluations using
 ## API
 
 ```py
-from package import Evaluation
+from rag_evaluation_framework import Evaluation
 
-evaluation = Evaluation()
+evaluation = Evaluation(
+    langsmith_dataset_name="my-dataset",
+    kb_data_path="./knowledge_base"
+)
 
-eval_results = evaluation.run( LangsmithDataSetName, KBDataPath, Chunker, EmbeddingFunc, k, reranker)
+eval_results = evaluation.run(
+    chunker=my_chunker,
+    embedder=my_embedder,
+    vector_store=my_vector_store,  # optional, defaults to Chroma
+    k=5,
+    reranker=my_reranker  # optional
+)
 ```
 
 

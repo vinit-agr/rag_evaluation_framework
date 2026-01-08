@@ -15,15 +15,17 @@ The framework helps you systematically evaluate different RAG configurations by:
 ```python
 from rag_evaluation_framework import Evaluation
 
-evaluator = Evaluation()
+evaluator = Evaluation(
+    langsmith_dataset_name="my-dataset",
+    kb_data_path="./knowledge_base"
+)
 
 results = evaluator.run(
-    langsmith_dataset_name="my-dataset",
-    kb_data_path="./knowledge_base",
-    chunker=my_chunker,
-    embedding_func=my_embedder,
+    chunker=my_chunker,           # optional, uses default if None
+    embedder=my_embedder,         # optional, uses OpenAI default if None
+    vector_store=my_vector_store, # optional, uses Chroma default if None
     k=5,
-    reranker=my_reranker,  # optional
+    reranker=my_reranker,         # optional
 )
 ```
 

@@ -9,13 +9,15 @@ Run a single evaluation with specific configuration:
 ```python
 from rag_evaluation_framework import Evaluation
 
-evaluator = Evaluation()
+evaluator = Evaluation(
+    langsmith_dataset_name="my-dataset",
+    kb_data_path="./knowledge_base"
+)
 
 results = evaluator.run(
-    langsmith_dataset_name="my-dataset",
-    kb_data_path="./knowledge_base",
-    chunker=my_chunker,           # See [Chunker](chunker.md)
-    embedding_func=my_embedder,   # See [Embedder](embedder.md)
+    chunker=my_chunker,           # Optional, see [Chunker](chunker.md)
+    embedder=my_embedder,         # Optional, see [Embedder](embedder.md)
+    vector_store=my_vector_store, # Optional, see [Vector Store](vector_store.md)
     k=5,
     reranker=my_reranker,         # Optional
 )
@@ -38,14 +40,16 @@ Evaluate multiple configurations automatically:
 ```python
 from rag_evaluation_framework import Evaluation, SweepConfig
 
-evaluator = Evaluation()
+evaluator = Evaluation(
+    langsmith_dataset_name="my-dataset",
+    kb_data_path="./knowledge_base"
+)
 
 sweep_results = evaluator.sweep(
-    langsmith_dataset_name="my-dataset",
-    kb_data_path="./knowledge_base",
     sweep_config=SweepConfig(
         chunkers=[chunker1, chunker2],
         embedders=[embedder1, embedder2],
+        vector_stores=[vector_store1, vector_store2],  # Optional
         k_values=[5, 10, 20],
         rerankers=[None, reranker1],
     )
