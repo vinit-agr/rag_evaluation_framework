@@ -1,5 +1,6 @@
+import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import List, Optional
 from rag_evaluation_framework.evaluation.chunker.base import Chunker
 from rag_evaluation_framework.evaluation.vector_store.base import VectorStore
 from rag_evaluation_framework.evaluation.reranker.base import Reranker
@@ -14,6 +15,11 @@ class Evaluation:
         self.langsmith_dataset_name = langsmith_dataset_name
         self.kb_data_path = kb_data_path
 
+    def __get_kb_markdown_files_path(self) -> List[Path]:
+        if not os.path.exists(self.kb_data_path):
+            raise FileNotFoundError(f"Knowledge base data path {self.kb_data_path} does not exist")
+
+        return [Path(os.path.join(self.kb_data_path, file)) for file in os.listdir(self.kb_data_path) if file.endswith(".md")]
 
     def run(
         self,
