@@ -22,8 +22,8 @@ The evaluation type (chunk-level vs token-level) should be a **foundational choi
 
 ### Token-Level Evaluation (Character Spans)
 - **Question**: "Did we retrieve the right *content*?"
-- **Ground truth**: List of position-aware chunk IDs (which map to character ranges)
-- **Metric basis**: Character overlap between spans
+- **Ground truth**: List of character spans (doc_id, start, end, text) - NO chunking at data generation
+- **Metric basis**: Character overlap between ground truth spans and retrieved chunk positions
 - **More granular**, captures partial relevance
 
 ---
@@ -55,14 +55,16 @@ The evaluation type (chunk-level vs token-level) should be a **foundational choi
 │                     │               │                     │
 │ Output:             │               │ Output:             │
 │ - query             │               │ - query             │
-│ - relevant_chunk_ids│               │ - relevant_pa_chunk │
-│   (chunk_xxxxx)     │               │   _ids (pa_chunk_xx)│
+│ - relevant_chunk_ids│               │ - relevant_spans    │
+│   (chunk_xxxxx)     │               │   (CharacterSpan[]) │
 └─────────────────────┘               └─────────────────────┘
            │                                     │
            ▼                                     ▼
 ┌─────────────────────┐               ┌─────────────────────┐
 │ LangSmith Dataset   │               │ LangSmith Dataset   │
 │ (ChunkLevelSchema)  │               │ (TokenLevelSchema)  │
+│                     │               │                     │
+│ Stores: chunk IDs   │               │ Stores: char spans  │
 └─────────────────────┘               └─────────────────────┘
            │                                     │
            ▼                                     ▼
@@ -72,7 +74,7 @@ The evaluation type (chunk-level vs token-level) should be a **foundational choi
 │                     │               │                     │
 │ Uses:               │               │ Uses:               │
 │ - Chunker           │               │ - PositionAware     │
-│ - Embedder          │               │   Chunker           │
+│ - Embedder          │               │   Chunker (required)│
 │ - VectorStore       │               │ - Embedder          │
 │ - Reranker          │               │ - VectorStore       │
 │                     │               │ - Reranker          │
@@ -229,21 +231,25 @@ class CharacterSpan:
     A span of characters in a source document.
 
     Represents a contiguous range of text within a document, defined by
-    start and end character positions. Used for computing overlap in
-    token-level evaluation metrics.
+    start and end character positions. Used in token-level evaluation for:
+    - Ground truth data (relevant excerpts from documents)
+    - Computing overlap between retrieved chunks and ground truth
 
     Attributes:
         doc_id: The document this span belongs to.
         start: Starting character position (inclusive, 0-indexed).
         end: Ending character position (exclusive).
+        text: The actual text content of this span. Included for convenience
+            and validation - should match document[start:end].
 
     Example:
-        For document content "Hello, World!", CharacterSpan("doc1", 0, 5)
+        For document content "Hello, World!", CharacterSpan("doc1", 0, 5, "Hello")
         represents the text "Hello".
     """
     doc_id: DocumentId
     start: int  # inclusive, 0-indexed
     end: int    # exclusive
+    text: str   # the actual text content (for convenience and validation)
 
     def overlaps(self, other: "CharacterSpan") -> bool:
         """
@@ -280,8 +286,9 @@ class PositionAwareChunk:
     """
     A chunk that knows its exact position in the source document.
 
-    Used in token-level evaluation where we need to compute character-level
-    overlap between retrieved chunks and ground truth spans.
+    Used in token-level evaluation at EVALUATION TIME (not data generation).
+    When evaluating, chunks are created with position tracking so we can
+    compute character-level overlap with ground truth spans.
 
     Attributes:
         id: Unique identifier for this chunk. Format: "pa_chunk_" + content hash.
@@ -308,12 +315,13 @@ class PositionAwareChunk:
         Convert this chunk to a CharacterSpan for metric calculation.
 
         Returns:
-            A CharacterSpan with the same document and position info.
+            A CharacterSpan with the same document, position, and text info.
         """
         return CharacterSpan(
             doc_id=self.doc_id,
             start=self.start,
             end=self.end,
+            text=self.content,
         )
 
 
@@ -389,8 +397,9 @@ class ChunkLevelRunOutput(TypedDict):
 
 ### Token-Level Types
 
-These types are used specifically for token-level evaluation, where ground truth
-and retrieval results reference position-aware chunks (character spans).
+These types are used specifically for token-level evaluation. Ground truth contains
+character spans (not chunk IDs) because there is NO chunking at synthetic data
+generation time - just raw excerpts from documents.
 
 ```python
 # =============================================================================
@@ -402,22 +411,21 @@ class TokenLevelGroundTruth:
     """
     Ground truth data for a single query in token-level evaluation.
 
-    Maps a query to the list of position-aware chunk IDs that contain
-    relevant content. The actual character spans can be looked up from
-    the chunk registry using these IDs.
+    Maps a query to the list of character spans that contain relevant content.
+    These spans are extracted directly from documents during synthetic data
+    generation - NO chunking is involved.
 
     Attributes:
         query: The query this ground truth is for.
-        relevant_chunk_ids: List of position-aware chunk IDs that are relevant.
-            Format: ["pa_chunk_a3f2b1c8d9e0", "pa_chunk_7d9e4f2a1b3c", ...]
+        relevant_spans: List of CharacterSpan objects representing the exact
+            excerpts from documents that answer the query.
 
     Note:
-        We store only chunk IDs (not the full span data) to avoid duplicating
-        text content in the dataset. The actual spans can be resolved by
-        looking up chunks from the ChunkRegistry.
+        Ground truth is chunker-independent. The same ground truth dataset
+        can be used to evaluate ANY chunking strategy.
     """
     query: Query
-    relevant_chunk_ids: List[PositionAwareChunkId]
+    relevant_spans: List[CharacterSpan]
 
 
 class TokenLevelDatasetExample(TypedDict):
@@ -425,10 +433,10 @@ class TokenLevelDatasetExample(TypedDict):
     LangSmith dataset example schema for token-level evaluation.
 
     This is the format used when storing/retrieving data from LangSmith.
-    Only stores chunk IDs to minimize data duplication.
+    Stores full character span data including text for convenience.
     """
-    inputs: Dict[str, QueryText]                    # {"query": "What is RAG?"}
-    outputs: Dict[str, List[PositionAwareChunkId]]  # {"relevant_chunk_ids": ["pa_chunk_xxx", ...]}
+    inputs: Dict[str, QueryText]  # {"query": "What is RAG?"}
+    outputs: Dict[str, Any]       # {"relevant_spans": [{doc_id, start, end, text}, ...]}
 
 
 class TokenLevelRunOutput(TypedDict):
@@ -436,60 +444,9 @@ class TokenLevelRunOutput(TypedDict):
     Output from the retrieval pipeline for token-level evaluation.
 
     This is what the retrieval function returns for each query.
+    The retrieved chunks are position-aware so we can compute span overlap.
     """
-    retrieved_chunk_ids: List[PositionAwareChunkId]  # ["pa_chunk_xxx", "pa_chunk_yyy", ...]
-
-
-# =============================================================================
-# CHUNK REGISTRY
-# =============================================================================
-
-class ChunkRegistry:
-    """
-    Registry for looking up chunk content and positions by ID.
-
-    Since we only store chunk IDs in ground truth and run outputs (to avoid
-    data duplication), we need a way to resolve IDs back to full chunk objects.
-    The ChunkRegistry serves this purpose.
-
-    This is especially important for token-level evaluation, where we need
-    the character span information to compute overlap metrics.
-
-    Usage:
-        registry = ChunkRegistry()
-        registry.register(chunk)
-
-        # Later, when computing metrics:
-        chunk = registry.get(chunk_id)
-        span = chunk.to_span()
-    """
-
-    def __init__(self):
-        self._chunks: Dict[ChunkId, Chunk] = {}
-        self._pa_chunks: Dict[PositionAwareChunkId, PositionAwareChunk] = {}
-
-    def register_chunk(self, chunk: Chunk) -> None:
-        """Register a standard chunk."""
-        self._chunks[chunk.id] = chunk
-
-    def register_pa_chunk(self, chunk: PositionAwareChunk) -> None:
-        """Register a position-aware chunk."""
-        self._pa_chunks[chunk.id] = chunk
-
-    def get_chunk(self, chunk_id: ChunkId) -> Optional[Chunk]:
-        """Look up a standard chunk by ID."""
-        return self._chunks.get(chunk_id)
-
-    def get_pa_chunk(self, chunk_id: PositionAwareChunkId) -> Optional[PositionAwareChunk]:
-        """Look up a position-aware chunk by ID."""
-        return self._pa_chunks.get(chunk_id)
-
-    def get_span(self, chunk_id: PositionAwareChunkId) -> Optional[CharacterSpan]:
-        """Get the character span for a position-aware chunk."""
-        chunk = self.get_pa_chunk(chunk_id)
-        if chunk is None:
-            return None
-        return chunk.to_span()
+    retrieved_spans: List[CharacterSpan]  # Converted from PositionAwareChunks
 ```
 
 ---
@@ -502,6 +459,10 @@ We maintain two separate interfaces: a simple `Chunker` for basic use cases, and
 `PositionAwareChunker` for token-level evaluation. An adapter bridges the two.
 
 **Decision**: Keep two separate interfaces with adapter pattern for maximum flexibility.
+
+**Important**: For token-level evaluation, the chunker passed to `TokenLevelEvaluation.run()`
+MUST be a `PositionAwareChunker` (or will be wrapped by the adapter). This is because
+we need position information from chunks to compute overlap with ground truth spans.
 
 ```python
 from abc import ABC, abstractmethod
@@ -674,7 +635,6 @@ class ChunkLevelDataGenerator(SyntheticDataGenerator):
     ):
         super().__init__(llm_client, corpus)
         self.chunker = chunker
-        self._chunk_registry = ChunkRegistry()
 
     def generate(
         self,
@@ -686,12 +646,12 @@ class ChunkLevelDataGenerator(SyntheticDataGenerator):
         Generate synthetic queries with relevant chunk IDs.
 
         Process:
-        1. Chunk all documents, build chunk registry with IDs
+        1. Chunk all documents, build chunk index with IDs
         2. For each document's chunks:
            a. Present chunks with their IDs to the LLM
            b. Ask LLM to generate queries that can be answered by specific chunks
            c. LLM returns both the query AND the relevant chunk IDs (citations)
-        3. Validate that returned chunk IDs exist in registry
+        3. Validate that returned chunk IDs exist
         4. Upload to LangSmith and/or return ground truth pairs
 
         The key insight is that query generation and chunk citation happen
@@ -716,11 +676,12 @@ class TokenLevelDataGenerator(SyntheticDataGenerator):
     """
     Generate synthetic QA pairs with character span ground truth.
 
-    This generator does NOT require a chunker upfront. Instead, it:
+    This generator does NOT require a chunker. There is NO chunking at
+    synthetic data generation time. Instead, it:
     1. Generates queries from document content
     2. Asks LLM to extract relevant excerpts (raw text)
     3. Finds character positions of excerpts in source document
-    4. Creates position-aware chunks from these excerpts
+    4. Stores as CharacterSpan objects (doc_id, start, end, text)
 
     This approach is chunker-independent, allowing fair comparison of
     different chunking strategies against the same ground truth.
@@ -730,10 +691,9 @@ class TokenLevelDataGenerator(SyntheticDataGenerator):
         self,
         llm_client,
         corpus: Corpus,
-        # Note: NO chunker required - ground truth is excerpt positions
+        # Note: NO chunker required - ground truth is character spans
     ):
         super().__init__(llm_client, corpus)
-        self._chunk_registry = ChunkRegistry()
 
     def generate(
         self,
@@ -750,10 +710,9 @@ class TokenLevelDataGenerator(SyntheticDataGenerator):
            b. For each query, ask LLM to extract verbatim relevant excerpts
         2. For each excerpt:
            a. Find exact character positions in source document
-           b. Create PositionAwareChunk with these positions
-           c. Register chunk in registry
-        3. Upload to LangSmith (only chunk IDs, not full text)
-        4. Return ground truth with chunk IDs (resolve via registry)
+           b. Create CharacterSpan with (doc_id, start, end, text)
+        3. Upload to LangSmith (character spans, not chunk IDs)
+        4. Return ground truth with CharacterSpan lists
 
         Advantages:
         - Same ground truth works with ANY chunking strategy
@@ -771,7 +730,7 @@ class TokenLevelDataGenerator(SyntheticDataGenerator):
         ...
 ```
 
-**Key Insight**: Token-level synthetic data generation is **chunker-independent**. We generate relevant excerpts directly from documents. This means:
+**Key Insight**: Token-level synthetic data generation is **chunker-independent**. We generate relevant excerpts directly from documents as character spans. This means:
 - Same ground truth dataset works with ANY chunking strategy
 - Can fairly compare different chunkers against same baseline
 - This is a major advantage of token-level evaluation!
@@ -862,6 +821,10 @@ class TokenLevelEvaluation:
 
     Compares character overlap between retrieved chunks and ground truth spans.
     Metrics are continuous: measures what fraction of relevant content was retrieved.
+
+    IMPORTANT: The chunker must be a PositionAwareChunker (or will be wrapped
+    with ChunkerPositionAdapter) because we need position information from
+    chunks to compute overlap with ground truth character spans.
     """
 
     def __init__(
@@ -886,6 +849,7 @@ class TokenLevelEvaluation:
 
         Args:
             chunker: Chunker to use. Will be wrapped with PositionAdapter if needed.
+                MUST produce position-aware chunks for metric calculation.
             embedder: Embedder for generating vector representations.
             k: Number of chunks to retrieve per query.
             vector_store: Vector store for indexing/search. Defaults to ChromaVectorStore.
@@ -893,13 +857,13 @@ class TokenLevelEvaluation:
             metrics: List of metrics to compute. Defaults to [SpanRecall, SpanPrecision, SpanIoU].
 
         Pipeline:
-        1. Chunk corpus using chunker (wrapped with PositionAdapter if needed)
+        1. Chunk corpus using PositionAwareChunker (wrap if needed)
         2. Track chunk positions in source documents
         3. Embed and index chunks (store positions in vector store metadata)
         4. For each query in dataset:
            - Retrieve top-k chunks (with position metadata)
            - Optionally rerank results
-           - Convert chunks to character spans
+           - Convert retrieved chunks to CharacterSpans
            - Compare retrieved spans vs ground truth spans (character overlap)
         5. Compute metrics (span recall, precision, IoU)
 
@@ -914,8 +878,8 @@ class TokenLevelEvaluation:
         if vector_store is None:
             vector_store = ChromaVectorStore()
 
-        # Wrap chunker if needed
-        if isinstance(chunker, Chunker):
+        # Wrap chunker if needed - MUST be position-aware for token-level eval
+        if isinstance(chunker, Chunker) and not isinstance(chunker, PositionAwareChunker):
             chunker = ChunkerPositionAdapter(chunker)
         ...
 ```
@@ -1100,7 +1064,7 @@ class SpanIoU(TokenLevelMetric):
 
 ### Chunk-Level Dataset
 
-Stores only chunk IDs to minimize data size. Chunk content can be resolved via ChunkRegistry.
+Stores chunk IDs as ground truth.
 
 ```json
 {
@@ -1137,7 +1101,7 @@ Example:
 
 ### Token-Level Dataset
 
-Stores only position-aware chunk IDs. Character spans are resolved via ChunkRegistry lookup.
+Stores full character span data including text. NO chunk IDs - these are raw excerpts.
 
 ```json
 {
@@ -1148,7 +1112,14 @@ Stores only position-aware chunk IDs. Character spans are resolved via ChunkRegi
       "query": "string"
     },
     "outputs": {
-      "relevant_chunk_ids": ["string (format: pa_chunk_xxxxxxxxxx)"],
+      "relevant_spans": [
+        {
+          "doc_id": "string",
+          "start": "integer",
+          "end": "integer",
+          "text": "string"
+        }
+      ],
       "metadata": {
         "generation_model": "string"
       }
@@ -1162,7 +1133,20 @@ Example:
 {
   "inputs": {"query": "What are the benefits of RAG?"},
   "outputs": {
-    "relevant_chunk_ids": ["pa_chunk_a3f2b1c8d9e0", "pa_chunk_7d9e4f2a1b3c"],
+    "relevant_spans": [
+      {
+        "doc_id": "rag_overview.md",
+        "start": 1520,
+        "end": 1847,
+        "text": "RAG combines the benefits of retrieval systems with generative models..."
+      },
+      {
+        "doc_id": "rag_overview.md",
+        "start": 2103,
+        "end": 2298,
+        "text": "Key advantages include reduced hallucination and access to current information..."
+      }
+    ],
     "metadata": {
       "generation_model": "gpt-4"
     }
@@ -1170,11 +1154,11 @@ Example:
 }
 ```
 
-**Note**: The actual text and character positions are NOT stored in the LangSmith dataset.
-They can be looked up from the ChunkRegistry using the chunk IDs. This avoids:
-- Duplicating text content across datasets and run outputs
-- Bloating LangSmith storage with redundant data
-- Making the dataset schema simpler and more consistent
+**Note**: Token-level ground truth stores actual character spans with text, NOT chunk IDs.
+This is intentional because:
+- There is NO chunking at synthetic data generation time
+- Ground truth is chunker-independent
+- Text is included for convenience and validation
 
 ---
 
@@ -1222,7 +1206,7 @@ eval = TokenLevelEvaluation(
 )
 
 result = eval.run(
-    chunker=RecursiveCharacterChunker(chunk_size=200),
+    chunker=RecursiveCharacterChunker(chunk_size=200),  # Will be wrapped as PositionAware
     embedder=OpenAIEmbedder(),
     k=5,
     # vector_store=ChromaVectorStore(),  # Optional, defaults to ChromaVectorStore
@@ -1253,7 +1237,7 @@ from openai import OpenAI
 corpus = Corpus.from_folder("./knowledge_base")
 
 # 2. Generate synthetic data (one-time)
-# Note: NO chunker required - ground truth is chunker-independent!
+# Note: NO chunker required - ground truth is character spans!
 generator = TokenLevelDataGenerator(
     llm_client=OpenAI(),
     corpus=corpus,
@@ -1281,7 +1265,7 @@ chunkers_to_test = [
 results = []
 for chunker in chunkers_to_test:
     result = eval.run(
-        chunker=chunker,
+        chunker=chunker,  # Each chunker wrapped as PositionAware internally
         embedder=OpenAIEmbedder(),
         k=5,
         # vector_store defaults to ChromaVectorStore
@@ -1374,12 +1358,14 @@ This prevents sliding window chunkers from artificially inflating metrics.
 ```json
 {
   "query": "Compare RAG and fine-tuning",
-  "relevant_chunk_ids": ["pa_chunk_a1b2c3d4", "pa_chunk_e5f6g7h8"]
+  "relevant_spans": [
+    {"doc_id": "rag.md", "start": 100, "end": 200, "text": "..."},
+    {"doc_id": "fine_tuning.md", "start": 50, "end": 150, "text": "..."}
+  ]
 }
 ```
 
-Where the chunks reference different source documents. This is realistic and the
-span-based approach handles it naturally.
+This is realistic and the span-based approach handles it naturally.
 
 ### 4. VectorStore Position Tracking
 
@@ -1448,12 +1434,12 @@ This provides maximum flexibility:
 
 | Aspect | Chunk-Level | Token-Level |
 |--------|-------------|-------------|
-| Ground truth format | Chunk IDs (`chunk_xxx`) | PA Chunk IDs (`pa_chunk_xxx`) |
-| Chunker for data gen | Required | Not needed |
+| Ground truth format | Chunk IDs (`chunk_xxx`) | Character spans (`{doc_id, start, end, text}`) |
+| Chunker for data gen | Required | NOT required |
 | Compare chunkers fairly | No (tied to GT chunker) | Yes (chunker-independent GT) |
 | Implementation complexity | Lower | Higher |
 | Metric granularity | Binary (chunk relevant or not) | Continuous (% overlap) |
-| Interface changes needed | None | Chunker position tracking |
+| Chunker at eval time | Regular Chunker | PositionAwareChunker (required) |
 | Best for | Quick iteration, simple cases | Research, chunker comparison |
 
 **Recommendation**:
@@ -1462,14 +1448,62 @@ This provides maximum flexibility:
 
 ---
 
+## Implementation Notes
+
+### Folder Structure for Metrics
+
+Create separate folders for chunk-level and token-level metrics in `evaluation/metrics/`:
+
+```
+evaluation/
+└── metrics/
+    ├── __init__.py
+    ├── base.py              # Base metric classes
+    ├── chunk_level/
+    │   ├── __init__.py
+    │   ├── recall.py        # ChunkRecall
+    │   ├── precision.py     # ChunkPrecision
+    │   └── f1.py            # ChunkF1
+    └── token_level/
+        ├── __init__.py
+        ├── recall.py        # SpanRecall
+        ├── precision.py     # SpanPrecision
+        └── iou.py           # SpanIoU
+```
+
+### Folder Structure for Synthetic Data Generation
+
+Create separate folders for chunk-level and token-level synthetic data generation:
+
+```
+synthetic_datagen/
+├── __init__.py
+├── base.py                  # Base SyntheticDataGenerator class
+├── chunk_level/
+│   ├── __init__.py
+│   └── generator.py         # ChunkLevelDataGenerator
+└── token_level/
+    ├── __init__.py
+    └── generator.py         # TokenLevelDataGenerator
+```
+
+**Rationale**: The strategy for generating synthetic data and the format in which
+data is saved is very different between chunk-level and token-level approaches:
+- Chunk-level requires a chunker and generates chunk ID citations
+- Token-level extracts verbatim excerpts and stores character spans
+
+Keeping them in separate folders makes the codebase clearer and easier to maintain.
+
+---
+
 ## Next Steps
 
 1. **Define** final type definitions in `types.py`
 2. **Implement** `PositionAwareChunker` interface and adapter
-3. **Implement** `ChunkRegistry` for chunk lookup
-4. **Implement** `TokenLevelDataGenerator` with excerpt extraction
-5. **Implement** `ChunkLevelDataGenerator` with citation-style query generation
-6. **Implement** span-based metrics with interval merging
+3. **Implement** `TokenLevelDataGenerator` with excerpt extraction (in `synthetic_datagen/token_level/`)
+4. **Implement** `ChunkLevelDataGenerator` with citation-style query generation (in `synthetic_datagen/chunk_level/`)
+5. **Implement** span-based metrics with interval merging (in `evaluation/metrics/token_level/`)
+6. **Implement** chunk-based metrics (in `evaluation/metrics/chunk_level/`)
 7. **Implement** `TokenLevelEvaluation.run()`
 8. **Implement** `ChunkLevelEvaluation.run()`
 9. **Update** VectorStore interface for position metadata
