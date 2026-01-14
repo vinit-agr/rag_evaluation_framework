@@ -4,45 +4,50 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a RAG (Retrieval-Augmented Generation) Evaluation Framework designed to systematically evaluate and optimize RAG pipelines through a multi-stage approach.
+RAG Evaluation Framework for systematically evaluating retrieval pipelines with Langsmith integration. Evaluates chunking strategies, embedding models, retrieval parameters, and re-rankers.
 
-## Pipeline Architecture
+## Development Commands
 
-The framework implements a modular pipeline with the following stages:
-
-1. **Pre-processing Data** - Knowledge base (kb) preparation and cleaning
-2. **Synthetic Data Generation** - Creating evaluation datasets
-3. **Chunking Strategy** - Document segmentation approaches
-4. **Embedding Model** - Vector representation of text chunks
-   - Supports custom embedding models for different vector stores/databases
-5. **Retrieval (@k parameter)** - Number of documents to retrieve
-6. **Re-ranker** - Optional re-ranking of retrieved documents
-
-## Development Setup
-
-**Python Version**: 3.12 (specified in .python-version)
-
-**Package Manager**: Using `uv` for dependency management (based on pyproject.toml structure)
-
-**Install Dependencies**:
 ```bash
+# Install dependencies
 uv pip install -e .
+
+# Python version: 3.12 (see .python-version)
 ```
 
-**Run the Application**:
-```bash
-python main.py
+## Architecture
+
+### Entry Point
+`Evaluation` class in `rag_evaluation_framework/evaluation/base_eval.py` - orchestrates the pipeline:
+```python
+from rag_evaluation_framework import Evaluation
+
+evaluation = Evaluation(langsmith_dataset_name="dataset", kb_data_path="./kb")
+results = evaluation.run(chunker=..., embedder=..., vector_store=..., k=5, reranker=...)
 ```
 
-## Project Structure
+### Component Abstractions (all in `evaluation/` subdirectories)
 
-This is an early-stage project with a minimal structure:
-- `main.py` - Entry point (currently a placeholder)
-- `pyproject.toml` - Project metadata and dependencies
-- `README.md` - Pipeline documentation
+Each component has a `base.py` defining an abstract interface:
 
-## Key Implementation Notes
+| Component | Base Class | Key Method | Location |
+|-----------|------------|------------|----------|
+| Chunker | `Chunker` | `chunk(text) -> List[str]` | `chunker/base.py` |
+| Embedder | `Embedder` | `embed_docs(docs) -> List[List[float]]` | `embedder/base.py` |
+| VectorStore | `VectorStore` | `search(query, k) -> List[str]` | `vector_store/base.py` |
+| Reranker | `Reranker` | `rerank(docs, query, k) -> List[str]` | `reranker/base.py` |
 
-- The framework is designed to be modular, allowing different components (chunking, embedding, retrieval, re-ranking) to be swapped and evaluated independently
-- Custom embedding models can be integrated to support various vector stores and databases
-- The re-ranker stage is optional and can be enabled/disabled based on evaluation needs
+### Metrics System
+
+All metrics extend `Metrics` base class (`evaluation/metrics/base.py`) with three required methods:
+- `calculate(retrieved_chunk_ids, ground_truth_chunk_ids) -> float`
+- `extract_ground_truth_chunks_ids(example) -> List[str]`
+- `extract_retrieved_chunks_ids(run) -> List[str]`
+
+Metrics auto-convert to Langsmith evaluators via `to_langsmith_evaluator()`. Use `get_langsmith_evaluators()` from `evaluation/utils.py` to batch convert.
+
+Built-in: `ChunkLevelRecall`, `TokenLevelRecall`
+
+### Langsmith Integration
+
+The framework wraps Langsmith's evaluation API. Metrics produce `EvaluationResult` objects compatible with Langsmith's `evaluate()` function. Dataset examples should contain ground truth chunk IDs in outputs.
